@@ -3,7 +3,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-SET=build/AppIcon.iconset
+SET=build.noindex/AppIcon.iconset
 mkdir -p "$SET"
 swift tools/make-icon.swift Resources/icon.png
 for s in 16 32 128 256 512; do

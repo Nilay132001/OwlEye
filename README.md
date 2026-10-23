@@ -43,11 +43,12 @@ This also lets you use your fingerprint for `sudo` in Terminal. It survives macO
 `pmset -a disablesleep 1` is the only macOS setting that keeps a laptop awake with the lid shut (`caffeinate` cannot). When you start a session, OwlEye runs
 
 ```
-sudo -k -A /bin/sh -c '<watchdog script>'
+sudo -k /bin/sh -c '<watchdog script>'
 ```
 
-- `-k` ignores any cached sudo login, so every session asks for Touch ID or your password.
-- `-A` uses [`askpass.sh`](Resources/askpass.sh) to show a password dialog when Touch ID is not used. The password goes straight to `sudo` and is never stored.
+- `-k` ignores any cached sudo login, so every session asks again.
+- The first try is plain `sudo`, which shows the Touch ID prompt.
+- If you cancel Touch ID, or it is not available (lid closed, Touch ID for sudo not turned on), OwlEye asks again with `sudo -k -A`. `-A` uses [`askpass.sh`](Resources/askpass.sh) to show a password dialog. The password goes straight to `sudo` and is never stored. (`-A` also disables Touch ID, which is why it is only the fallback.)
 
 The watchdog checks every 5 seconds and runs `pmset -a disablesleep 0` the moment any stop condition is met. **Stop** needs no password: OwlEye drops a file in `~/Library/Application Support/OwlEye/` and the watchdog sees it.
 
@@ -62,9 +63,11 @@ pmset -g | grep SleepDisabled   # "1" during a session, absent otherwise
 Needs macOS 14+ and Swift 6 (the Xcode Command Line Tools are enough).
 
 ```sh
-./build.sh            # builds build/OwlEye.app
+./build.sh            # builds build.noindex/OwlEye.app (hidden from Spotlight)
 ./build.sh --install  # also copies it to ~/Applications
 ```
+
+Open the copy in `~/Applications`. Diagnostics go to `~/Library/Logs/OwlEye.log`.
 
 The app is ad-hoc signed, so the first time you open it macOS may ask you to confirm in **System Settings → Privacy & Security → Open Anyway**.
 

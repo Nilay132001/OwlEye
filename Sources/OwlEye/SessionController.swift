@@ -9,14 +9,28 @@ final class SessionController: ObservableObject {
     @Published var message: String?
     @Published private(set) var now = Date()
 
-    private var ownsSession = false
+    /// The root watchdog for the current session (`sudo` → `sh`), while it runs.
+    private var watchdog: Process?
     private var ticker: Timer?
+
+    private var ownsSession: Bool { watchdog?.isRunning == true }
 
     private let stopFile: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OwlEye", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("stop")
+    }()
+
+    /// ~/Library/Logs/OwlEye.log, created here so it stays owned by you even though
+    /// the root watchdog appends to it.
+    private let logFile: URL = {
+        let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/OwlEye.log")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        return url
     }()
 
     init() {
@@ -28,10 +42,11 @@ final class SessionController: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.requestStop() }
         }
-        // If sleep is still disabled after an old watchdog has had time to notice its
-        // app is gone (it polls every 5 s), something was left behind: fix it.
+        // An old watchdog notices within a second that its app is gone. If sleep is
+        // still disabled after that, something was left behind: fix it.
+        refresh()
         if Self.sleepDisabled() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 guard let self, !self.ownsSession, Self.sleepDisabled() else { return }
                 self.message = "Sleep was left disabled. Restoring…"
                 self.restoreNow()
@@ -54,6 +69,7 @@ final class SessionController: ObservableObject {
             appPID: ProcessInfo.processInfo.processIdentifier,
             deadline: end.map { Int($0.timeIntervalSince1970) } ?? 0,
             stopFile: stopFile.path,
+            logFile: logFile.path,
             stopOnUnplug: stopOnUnplug,
             minBattery: minBattery
         )
@@ -63,51 +79,76 @@ final class SessionController: ObservableObject {
         }
         try? FileManager.default.removeItem(at: stopFile)
         isStarting = true
-        message = "Touch ID or password…"
-        let started = runPrivileged(["/bin/sh", "-c", Watchdog.script(options)]) { [weak self] status in
-            // The watchdog exits when the session ends; before that, an exit means sudo refused.
-            guard let self, self.isStarting else { return }
-            self.isStarting = false
-            self.message = status == 0 ? nil : "Not authorised (cancelled or wrong password)."
-            self.refresh()
-        }
-        guard started else {
+        launchWatchdog(["/bin/sh", "-c", Watchdog.script(options)], withPassword: false)
+        guard watchdog != nil else {
             isStarting = false
             return
         }
         waitForSleepDisabled(until: Date().addingTimeInterval(120), end: end)
     }
 
+    /// Tries Touch ID first; if that is cancelled or unavailable, asks again with the
+    /// password dialog.
+    private func launchWatchdog(_ command: [String], withPassword: Bool) {
+        message = withPassword ? "Enter your password…" : "Touch ID…"
+        watchdog = runPrivileged(command, withPassword: withPassword) { [weak self] status in
+            guard let self else { return }
+            // Before sleep was disabled, an exit means sudo refused; after, the session ended.
+            if self.isStarting && status != 0 && !withPassword {
+                self.launchWatchdog(command, withPassword: true)
+                return
+            }
+            if self.isStarting {
+                self.isStarting = false
+                self.message = status == 0 ? nil : "Not authorised (cancelled or wrong password)."
+            }
+            self.watchdog = nil
+            self.endDate = nil
+            self.refresh()
+        }
+    }
+
     /// Polls until the watchdog has run `pmset -a disablesleep 1`, which happens only
     /// after sudo accepted Touch ID or the password.
     private func waitForSleepDisabled(until deadline: Date, end: Date?) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self, self.isStarting else { return }
-            if Self.sleepDisabled() {
+            if self.ownsSession && Self.sleepDisabled() {
                 self.isStarting = false
-                self.ownsSession = true
                 self.endDate = end
                 self.message = nil
                 self.refresh()
-            } else if Date() < deadline {
+            } else if Date() < deadline && self.watchdog != nil {
                 self.waitForSleepDisabled(until: deadline, end: end)
-            } else {
+            } else if self.isStarting {
                 self.isStarting = false
                 self.message = "Timed out waiting for authorisation."
             }
         }
     }
 
-    /// Asks the watchdog to restore sleep. No password needed: it polls for this file.
+    /// Ends the session. With our watchdog running this needs no password: it checks for
+    /// the stop file every second. If sleep was disabled by anything else, restore it
+    /// directly (Touch ID or password).
     func requestStop() {
-        FileManager.default.createFile(atPath: stopFile.path, contents: nil)
-        message = isActive ? "Stopping…" : nil
+        if ownsSession {
+            FileManager.default.createFile(atPath: stopFile.path, contents: nil)
+            message = "Stopping…"
+        } else if Self.sleepDisabled() {
+            message = "Restoring sleep…"
+            restoreNow()
+        }
     }
 
-    func restoreNow() {
-        _ = runPrivileged(Watchdog.restoreCommand) { [weak self] status in
-            self?.message = status == 0 ? nil : "Could not restore sleep. Run: sudo pmset -a disablesleep 0"
-            self?.refresh()
+    func restoreNow(withPassword: Bool = false) {
+        runPrivileged(Watchdog.restoreCommand, withPassword: withPassword) { [weak self] status in
+            guard let self else { return }
+            if status != 0 && !withPassword {
+                self.restoreNow(withPassword: true)
+                return
+            }
+            self.message = status == 0 ? nil : "Could not restore sleep. Run: sudo pmset -a disablesleep 0"
+            self.refresh()
         }
     }
 
@@ -115,26 +156,36 @@ final class SessionController: ObservableObject {
         now = Date()
         let active = Self.sleepDisabled()
         if isActive && !active {
-            ownsSession = false
             endDate = nil
-            if message == "Stopping…" { message = nil }
+            if message == "Stopping…" || message == "Restoring sleep…" { message = nil }
         }
         isActive = active
     }
 
-    /// Runs a command as root with `sudo -k -A`. `-k` ignores any cached sudo login, so
-    /// every call asks again: Touch ID if it is enabled for sudo, otherwise (or if
-    /// cancelled) the password dialog in askpass.sh. Nothing is added to sudoers.
-    private func runPrivileged(_ command: [String], onExit: @escaping @MainActor (Int32) -> Void) -> Bool {
-        guard let askpass = Bundle.main.url(forResource: "askpass", withExtension: "sh") else {
-            message = "askpass.sh is missing from the app bundle. Rebuild with ./build.sh."
-            return false
+    /// Runs a command as root with `sudo -k`. `-k` ignores any cached sudo login, so every
+    /// call asks again. Nothing is added to sudoers.
+    ///
+    /// - `withPassword: false` → plain `sudo`: Touch ID if it is enabled for sudo. With no
+    ///   terminal attached, sudo exits at once if Touch ID is cancelled or unavailable.
+    /// - `withPassword: true` → `sudo -A`: the password dialog in askpass.sh. `-A` turns
+    ///   Touch ID off, which is why it is only the fallback.
+    @discardableResult
+    private func runPrivileged(
+        _ command: [String], withPassword: Bool, onExit: @escaping @MainActor (Int32) -> Void
+    ) -> Process? {
+        var environment = ProcessInfo.processInfo.environment
+        var flags = ["-k"]
+        if withPassword {
+            guard let askpass = Bundle.main.url(forResource: "askpass", withExtension: "sh") else {
+                message = "askpass.sh is missing from the app bundle. Rebuild with ./build.sh."
+                return nil
+            }
+            environment["SUDO_ASKPASS"] = askpass.path
+            flags += ["-A", "-p", "OwlEye needs your password to keep the Mac awake:"]
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["-k", "-A", "-p", "OwlEye needs your password to keep the Mac awake:"] + command
-        var environment = ProcessInfo.processInfo.environment
-        environment["SUDO_ASKPASS"] = askpass.path
+        process.arguments = flags + command
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -145,10 +196,10 @@ final class SessionController: ObservableObject {
         }
         do {
             try process.run()
-            return true
+            return process
         } catch {
             message = "Could not run sudo: \(error.localizedDescription)"
-            return false
+            return nil
         }
     }
 

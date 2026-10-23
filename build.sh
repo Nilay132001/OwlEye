@@ -1,10 +1,11 @@
 #!/bin/sh
-# Builds OwlEye.app into ./build. Usage: ./build.sh [--install]
+# Builds OwlEye.app into ./build.noindex. Usage: ./build.sh [--install]
+# The .noindex suffix keeps Spotlight from listing this copy next to the installed one.
 set -eu
 cd "$(dirname "$0")"
 
 swift build -c release
-APP=build/OwlEye.app
+APP=build.noindex/OwlEye.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/OwlEye "$APP/Contents/MacOS/OwlEye"
 cp Info.plist "$APP/Contents/Info.plist"
