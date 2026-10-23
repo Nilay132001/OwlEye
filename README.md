@@ -18,6 +18,9 @@ Click the eye, pick a time, confirm with **Touch ID** (or your password), close 
   - on battery, the charge drops below 20% (optional)
 
   If sleep is still off when OwlEye launches, it asks to restore it.
+- **Dark when closed.** When the lid closes, the watchdog runs `pmset displaysleepnow`, so the screen and keyboard light go off while the Mac keeps working.
+
+When you open the lid in the morning you will see the lock screen (with the live wallpaper if you use one). That is normal: the display slept and the screen locked, but the Mac itself stayed awake. `~/Library/Logs/OwlEye.log` shows when the session started, when the lid closed and opened, and when sleep was restored.
 
 ## Use
 

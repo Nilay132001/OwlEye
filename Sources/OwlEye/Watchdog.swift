@@ -34,12 +34,24 @@ enum Watchdog {
         /usr/bin/pmset -a disablesleep 1 && log "sleep disabled (deadline=$DEADLINE app=$APP_PID)"
         REASON=""
         TICK=0
+        LID="open"
         while [ -z "$REASON" ]; do
           sleep 1
           TICK=$((TICK + 1))
           kill -0 "$APP_PID" 2>/dev/null || { REASON="app exited"; break; }
           [ -e "$STOP_FILE" ] && { REASON="stop pressed"; break; }
           if [ "$DEADLINE" -gt 0 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then REASON="timer ended"; break; fi
+          # When the lid closes, turn the screen (and with it the keyboard light) off.
+          # This is display sleep only; the Mac and your agents keep running.
+          if /usr/sbin/ioreg -r -k AppleClamshellState -d 1 | grep -q '"AppleClamshellState" = Yes'; then
+            if [ "$LID" = "open" ]; then
+              LID="closed"
+              /usr/bin/pmset displaysleepnow && log "lid closed: display off"
+            fi
+          elif [ "$LID" = "closed" ]; then
+            LID="open"
+            log "lid opened"
+          fi
           # Power checks spawn pmset, so run them every 5 seconds rather than every tick.
           [ $((TICK % 5)) -eq 0 ] || continue
           BATT="$(/usr/bin/pmset -g batt)"
