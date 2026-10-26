@@ -20,7 +20,7 @@ Click the eye, pick a time, confirm with **Touch ID** (or your password), close 
   If sleep is still off when OwlEye launches, it asks to restore it.
 - **Dark when closed.** When the lid closes, the watchdog runs `pmset displaysleepnow`, so the screen and keyboard light go off while the Mac keeps working.
 
-When you open the lid in the morning you will see the lock screen (with the live wallpaper if you use one). That is normal: the display slept and the screen locked, but the Mac itself stayed awake. `~/Library/Logs/OwlEye.log` shows when the session started, when the lid closed and opened, and when sleep was restored.
+When you open the lid in the morning you will see the lock screen (with the live wallpaper if you use one). That is normal: the display slept and the screen locked, but the Mac itself stayed awake. `/var/log/OwlEye.log` shows when the session started, when the lid closed and opened, and when sleep was restored.
 
 ## Use
 
@@ -53,7 +53,9 @@ sudo -k /bin/sh -c '<watchdog script>'
 - The first try is plain `sudo`, which shows the Touch ID prompt.
 - If you cancel Touch ID, or it is not available (lid closed, Touch ID for sudo not turned on), OwlEye asks again with `sudo -k -A`. `-A` uses [`askpass.sh`](Resources/askpass.sh) to show a password dialog. The password goes straight to `sudo` and is never stored. (`-A` also disables Touch ID, which is why it is only the fallback.)
 
-The watchdog checks every 5 seconds and runs `pmset -a disablesleep 0` the moment any stop condition is met. **Stop** needs no password: OwlEye drops a file in `~/Library/Application Support/OwlEye/` and the watchdog sees it.
+The watchdog checks every second (power every 5 seconds) and runs `pmset -a disablesleep 0` the moment any stop condition is met. **Stop** needs no password: OwlEye drops a file in `~/Library/Application Support/OwlEye/` and the watchdog sees it.
+
+The root watchdog never writes to or deletes anything in your home folder. It only checks whether the stop file exists, changes `pmset` settings, and appends to the root-owned `/var/log/OwlEye.log`. That way no program running as you can trick it into writing over a system file.
 
 Check the state yourself at any time:
 
@@ -70,7 +72,7 @@ Needs macOS 14+ and Swift 6 (the Xcode Command Line Tools are enough).
 ./build.sh --install  # also copies it to ~/Applications
 ```
 
-Open the copy in `~/Applications`. Diagnostics go to `~/Library/Logs/OwlEye.log`.
+Open the copy in `~/Applications`. Diagnostics go to `/var/log/OwlEye.log`.
 
 The app is ad-hoc signed, so the first time you open it macOS may ask you to confirm in **System Settings → Privacy & Security → Open Anyway**.
 

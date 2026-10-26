@@ -5,32 +5,35 @@ import Foundation
 /// Because it watches the app's PID, a crash or force-quit still restores sleep, and a
 /// trap restores it if the watchdog itself is interrupted or terminated.
 enum Watchdog {
+    /// Root-owned, so nothing running as you can redirect the root watchdog's writes.
+    /// Readable by everyone: `cat /var/log/OwlEye.log`.
+    static let logFile = "/var/log/OwlEye.log"
+
     struct Options {
         var appPID: Int32
         var deadline: Int        // Unix seconds; 0 = no timer
         var stopFile: String
-        var logFile: String
         var stopOnUnplug: Bool
         var minBattery: Int      // 0 = no battery floor
     }
 
+    /// The script only ever reads paths you own (it checks whether the stop file
+    /// exists). Everything it writes as root is a pmset setting or a file in /var/log.
     static func script(_ o: Options) -> String {
         """
         APP_PID=\(o.appPID)
         DEADLINE=\(o.deadline)
         STOP_FILE=\(quoted(o.stopFile))
-        LOG_FILE=\(quoted(o.logFile))
+        LOG_FILE=\(quoted(logFile))
         STOP_ON_UNPLUG=\(o.stopOnUnplug ? 1 : 0)
         MIN_BATTERY=\(o.minBattery)
 
         log() { echo "$(date '+%Y-%m-%d %H:%M:%S') watchdog[$$]: $*" >> "$LOG_FILE"; }
         restore() {
           /usr/bin/pmset -a disablesleep 0 && log "sleep restored ($1)" || log "FAILED to restore sleep ($1)"
-          rm -f "$STOP_FILE"
         }
         trap 'restore "signal"; exit 0' HUP INT TERM
 
-        rm -f "$STOP_FILE"
         /usr/bin/pmset -a disablesleep 1 && log "sleep disabled (deadline=$DEADLINE app=$APP_PID)"
         REASON=""
         TICK=0

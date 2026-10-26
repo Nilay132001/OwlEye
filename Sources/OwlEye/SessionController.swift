@@ -22,25 +22,19 @@ final class SessionController: ObservableObject {
         return dir.appendingPathComponent("stop")
     }()
 
-    /// ~/Library/Logs/OwlEye.log, created here so it stays owned by you even though
-    /// the root watchdog appends to it.
-    private let logFile: URL = {
-        let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs/OwlEye.log")
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        return url
-    }()
-
     init() {
         ticker = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        // On quit, only signal our own watchdog (it would notice the app is gone within a
+        // second anyway). Never start a Touch ID prompt while the app is closing.
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.requestStop() }
+            MainActor.assumeIsolated {
+                guard let self, self.ownsSession else { return }
+                FileManager.default.createFile(atPath: self.stopFile.path, contents: nil)
+            }
         }
         // An old watchdog notices within a second that its app is gone. If sleep is
         // still disabled after that, something was left behind: fix it.
@@ -69,7 +63,6 @@ final class SessionController: ObservableObject {
             appPID: ProcessInfo.processInfo.processIdentifier,
             deadline: end.map { Int($0.timeIntervalSince1970) } ?? 0,
             stopFile: stopFile.path,
-            logFile: logFile.path,
             stopOnUnplug: stopOnUnplug,
             minBattery: minBattery
         )
@@ -84,7 +77,7 @@ final class SessionController: ObservableObject {
             isStarting = false
             return
         }
-        waitForSleepDisabled(until: Date().addingTimeInterval(120), end: end)
+        waitForSleepDisabled(end: end)
     }
 
     /// Tries Touch ID first; if that is cancelled or unavailable, asks again with the
@@ -102,6 +95,8 @@ final class SessionController: ObservableObject {
                 self.isStarting = false
                 self.message = status == 0 ? nil : "Not authorised (cancelled or wrong password)."
             }
+            // The root watchdog never touches your files, so the app cleans up after it.
+            try? FileManager.default.removeItem(at: self.stopFile)
             self.watchdog = nil
             self.endDate = nil
             self.refresh()
@@ -109,8 +104,10 @@ final class SessionController: ObservableObject {
     }
 
     /// Polls until the watchdog has run `pmset -a disablesleep 1`, which happens only
-    /// after sudo accepted Touch ID or the password.
-    private func waitForSleepDisabled(until deadline: Date, end: Date?) {
+    /// after sudo accepted Touch ID or the password. No timeout: while sudo is still
+    /// waiting for you, the session may yet start; if sudo gives up, its exit handler
+    /// ends the wait.
+    private func waitForSleepDisabled(end: Date?) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self, self.isStarting else { return }
             if self.ownsSession && Self.sleepDisabled() {
@@ -118,11 +115,8 @@ final class SessionController: ObservableObject {
                 self.endDate = end
                 self.message = nil
                 self.refresh()
-            } else if Date() < deadline && self.watchdog != nil {
-                self.waitForSleepDisabled(until: deadline, end: end)
-            } else if self.isStarting {
-                self.isStarting = false
-                self.message = "Timed out waiting for authorisation."
+            } else {
+                self.waitForSleepDisabled(end: end)
             }
         }
     }
